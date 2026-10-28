@@ -11,7 +11,7 @@ from supabase import create_client, Client
 # -----------------------------------------------------------------------------
 # ANTHROPIC CLAUDE API CONFIGURATION
 # -----------------------------------------------------------------------------
-API_KEY = "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"  # შენი API გასაღები
+API_KEY = "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"  # შენი API გასაღები
 client = anthropic.Anthropic(api_key=API_KEY)
 
 # -----------------------------------------------------------------------------
