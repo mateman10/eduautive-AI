@@ -3,32 +3,14 @@ import bcrypt
 import re
 import io
 import base64
+import html
 import pandas as pd
 import anthropic
 from pypdf import PdfReader
 from supabase import create_client, Client
 
 # -----------------------------------------------------------------------------
-# ANTHROPIC CLAUDE API CONFIGURATION
-# -----------------------------------------------------------------------------
-API_KEY = "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"  # შენი API გასაღები
-client = anthropic.Anthropic(api_key=API_KEY)
-
-# -----------------------------------------------------------------------------
-# SUPABASE CONNECTION CONFIGURATION
-# -----------------------------------------------------------------------------
-# შეგიძლიათ გამოიყენოთ st.secrets ან პირდაპირ ჩასვათ თქვენი მონაცემები
-SUPABASE_URL = st.secrets.get("supabase", {}).get("url", "YOUR_SUPABASE_URL")
-SUPABASE_KEY = st.secrets.get("supabase", {}).get("key", "YOUR_SUPABASE_KEY")
-
-@st.cache_resource
-def init_supabase() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-supabase = init_supabase()
-
-# -----------------------------------------------------------------------------
-# PAGE CONFIGURATION & FULL RESPONSIVE GEMINI / CLAUDE DARK THEME
+# გვერდის კონფიგურაცია (უნდა იყოს პირველი Streamlit ბრძანება)
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="EduAudit AI",
@@ -36,6 +18,37 @@ st.set_page_config(
     layout="centered"
 )
 
+# -----------------------------------------------------------------------------
+# ANTHROPIC CLAUDE API კონფიგურაცია
+# გასაღები იკითხება .streamlit/secrets.toml-დან (არასოდეს ჩაწეროთ პირდაპირ კოდში!)
+# -----------------------------------------------------------------------------
+API_KEY = st.secrets.get("ANTHROPIC_API_KEY", "").strip()
+if not API_KEY:
+    st.error("ANTHROPIC_API_KEY ვერ მოიძებნა. დაამატეთ secrets.toml ფაილში.")
+    st.stop()
+
+client = anthropic.Anthropic(
+    api_key=API_KEY,
+    default_headers={"anthropic-version": "2026-10-21"},
+)
+
+# -----------------------------------------------------------------------------
+# SUPABASE კავშირის კონფიგურაცია
+# -----------------------------------------------------------------------------
+SUPABASE_URL = st.secrets.get("supabase", {}).get("url", "YOUR_SUPABASE_URL")
+SUPABASE_KEY = st.secrets.get("supabase", {}).get("key", "YOUR_SUPABASE_KEY")
+
+
+@st.cache_resource
+def init_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+supabase = init_supabase()
+
+# -----------------------------------------------------------------------------
+# სტილები (მუქი თემა)
+# -----------------------------------------------------------------------------
 st.markdown("""
 <style>
     .stApp {
@@ -43,7 +56,7 @@ st.markdown("""
         color: #e3e3e3;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
-    
+
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -56,7 +69,7 @@ st.markdown("""
         margin-bottom: 20px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.4);
     }
-    
+
     [data-testid='stFileUploader'] {
         background-color: #ffffff;
         border-radius: 12px;
@@ -79,7 +92,7 @@ st.markdown("""
         color: #f3f4f6;
         word-break: break-word;
     }
-    
+
     .chat-bubble-ai {
         background-color: #131314;
         border: 1px solid #282a2c;
@@ -88,6 +101,7 @@ st.markdown("""
         margin-bottom: 12px;
         color: #e3e3e3;
         word-break: break-word;
+        white-space: pre-wrap;
     }
 
     .stTextInput input, .stTextArea textarea {
@@ -97,7 +111,7 @@ st.markdown("""
         border: 1px solid #444746 !important;
         padding: 12px 16px !important;
     }
-    
+
     .stButton button {
         background: linear-gradient(135deg, #8ab4f8 0%, #669df6 100%);
         color: #131314;
@@ -118,7 +132,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# SESSION STATE & URL QUERY PARAMS CHECK
+# SESSION STATE
+# შენიშვნა: ავტომატური შესვლა URL-ის (?user=...) საშუალებით წაშლილია,
+# რადგან ნებისმიერს შეეძლო სხვა მომხმარებლად (მათ შორის ადმინად) შესვლა.
 # -----------------------------------------------------------------------------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -129,27 +145,25 @@ if 'role' not in st.session_state:
 if 'auth_mode' not in st.session_state:
     st.session_state.auth_mode = "შესვლა"
 
-query_params = st.query_params
-url_user = query_params.get("user")
-
-if url_user and not st.session_state.logged_in:
-    res = supabase.table("users").select("email, role").eq("email", url_user).execute()
-    if res.data:
-        user_res = res.data[0]
-        st.session_state.logged_in = True
-        st.session_state.user = user_res["email"]
-        st.session_state.role = user_res["role"]
 
 # -----------------------------------------------------------------------------
-# HELPERS
+# დამხმარე ფუნქციები
 # -----------------------------------------------------------------------------
 def validate_email(email):
     return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email)
 
+
 def validate_password(password):
     return len(password) >= 8 and any(c.isupper() for c in password)
 
+
+def esc(text):
+    """HTML-ის ესქეიპინგი, რომ ტექსტმა გვერდი არ დააზიანოს."""
+    return html.escape(str(text))
+
+
 def read_uploaded_file(uploaded_file):
+    """ატვირთული ფაილიდან ტექსტის ამოღება (PDF ან ჩვეულებრივი ტექსტი)."""
     name = uploaded_file.name.lower()
     raw = uploaded_file.getvalue()
 
@@ -175,17 +189,18 @@ def read_uploaded_file(uploaded_file):
             continue
     return raw.decode("latin-1", errors="replace")
 
+
 # -----------------------------------------------------------------------------
-# AUTHENTICATION SCREEN
+# ავტორიზაციის ეკრანი
 # -----------------------------------------------------------------------------
 if not st.session_state.logged_in:
     st.markdown("<h1 style='text-align: center; color: #ffffff; font-weight: 800; margin-top: 20px;'>🛡️ EduAudit AI</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #9aa0a6; margin-bottom: 25px; font-size: 14px;'>Enterprise-Grade Secure Document & Compliance Auditor</p>", unsafe_allow_html=True)
-    
+
     col1, col2, col3 = st.columns([0.1, 2.8, 0.1])
     with col2:
         st.markdown('<div class="gemini-card">', unsafe_allow_html=True)
-        
+
         t1, t2 = st.columns(2)
         with t1:
             if st.button("🔑 შესვლა", use_container_width=True):
@@ -195,12 +210,12 @@ if not st.session_state.logged_in:
             if st.button("📝 რეგისტრაცია", use_container_width=True):
                 st.session_state.auth_mode = "რეგისტრაცია"
                 st.rerun()
-        
+
         st.markdown(f"<p style='text-align: center; color: #8ab4f8; font-size: 13px; font-weight: 600; margin-top: 15px;'>რეჟიმი: {st.session_state.auth_mode}</p>", unsafe_allow_html=True)
 
         email = st.text_input("ელფოსტა", placeholder="name@example.com")
         password = st.text_input("პაროლი", type="password", placeholder="მინ. 8 სიმბოლო, 1 დიდი ასო")
-        
+
         if st.session_state.auth_mode == "რეგისტრაცია":
             if st.button("ანგარიშის შექმნა", use_container_width=True):
                 if not validate_email(email):
@@ -209,32 +224,33 @@ if not st.session_state.logged_in:
                     st.error("პაროლი უნდა იყოს მინიმუმ 8 სიმბოლო და შეიცავდეს 1 დიდ ასოს.")
                 else:
                     try:
-                        # შევამოწმოთ არსებობს თუ არა უკვე ეს ელფოსტა
+                        # ვამოწმებთ, უკვე ხომ არ არსებობს ეს ელფოსტა
                         existing_user = supabase.table("users").select("email").eq("email", email).execute()
                         if existing_user.data:
                             st.error("ეს ელფოსტა უკვე დაკავებულია.")
                         else:
                             hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                            
-                            # შევამოწმოთ სულ რამდენი იუზერია ბაზაში
+
+                            # ვითვლით რამდენი მომხმარებელია ბაზაში
                             all_users = supabase.table("users").select("id", count="exact").execute()
                             user_count = all_users.count if all_users.count is not None else len(all_users.data)
-                            
+
+                            # პირველი მომხმარებელი ან მთავარი ელფოსტა ხდება ადმინი
                             role = "ADMIN" if (user_count == 0 or email == "mmanagadze123@gmail.com") else "USER"
-                            
+
                             supabase.table("users").insert({
                                 "email": email,
                                 "password_hash": hashed,
                                 "role": role
                             }).execute()
-                            
+
                             st.success("რეგისტრაცია წარმატებულია! შეგიძლიათ შეხვიდეთ.")
                     except Exception as e:
                         st.error(f"შეცდომა რეგისტრაციისას: {e}")
         else:
             if st.button("შესვლა", use_container_width=True):
                 res = supabase.table("users").select("password_hash, role").eq("email", email).execute()
-                
+
                 login_success = False
                 user_role = None
                 if res.data:
@@ -245,46 +261,48 @@ if not st.session_state.logged_in:
                     if bcrypt.checkpw(password.encode('utf-8'), stored_hash):
                         login_success = True
 
-                if res.data and login_success:
+                if login_success:
                     st.session_state.logged_in = True
                     st.session_state.user = email
                     st.session_state.role = user_role
-                    st.query_params["user"] = email
                     st.rerun()
                 else:
                     st.error("არასწორი ელფოსტა ან პაროლი.")
         st.markdown('</div>', unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# MAIN CHAT / WORKSPACE INTERFACE
+# მთავარი სამუშაო სივრცე
 # -----------------------------------------------------------------------------
 else:
     col_a, col_b = st.columns([3, 1])
     with col_a:
         st.markdown("### 🛡️ EduAudit Workspace")
         role_badge = "👑 ადმინისტრატორი" if st.session_state.role == "ADMIN" else "👤 მომხმარებელი"
-        st.markdown(f"<span style='color: #9aa0a6; font-size: 13px;'>მომხმარებელი: <b>{st.session_state.user}</b> ({role_badge})</span>", unsafe_allow_html=True)
+        st.markdown(f"<span style='color: #9aa0a6; font-size: 13px;'>მომხმარებელი: <b>{esc(st.session_state.user)}</b> ({role_badge})</span>", unsafe_allow_html=True)
     with col_b:
         st.markdown("<div style='text-align: right;'>", unsafe_allow_html=True)
         if st.button("🚪 გასვლა"):
             st.session_state.logged_in = False
             st.session_state.user = None
             st.session_state.role = None
-            st.query_params.clear()
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # ადმინს აქვს ნავიგაცია სამუშაო სივრცესა და პანელს შორის
     if st.session_state.role == "ADMIN":
         app_mode_selection = st.pills(
-            "Navigation", 
-            ["📁 სამუშაო სივრცე", "📊 ადმინისტრატორის პანელი"], 
+            "Navigation",
+            ["📁 სამუშაო სივრცე", "📊 ადმინისტრატორის პანელი"],
             default="📁 სამუშაო სივრცე",
             label_visibility="collapsed"
         )
-        app_mode = "workspace" if app_mode_selection == "📁 სამუშაო სივრცე" else "admin"
+        app_mode = "admin" if app_mode_selection == "📊 ადმინისტრატორის პანელი" else "workspace"
     else:
         app_mode = "workspace"
 
+    # -------------------------------------------------------------------------
+    # სამუშაო სივრცე: ფაილის ატვირთვა და ანალიზი
+    # -------------------------------------------------------------------------
     if app_mode == "workspace":
         st.markdown('<div class="gemini-card" style="margin-top: 15px;">', unsafe_allow_html=True)
         st.markdown("""
@@ -293,11 +311,11 @@ else:
                 <h3 style='margin: 0; color: #f3f4f6; font-size: 20px;'>ფაილის ატვირთვა და ანალიზი</h3>
             </div>
         """, unsafe_allow_html=True)
-        
+
         uploaded_file = st.file_uploader("📂 ატვირთეთ ნებისმიერი ფაილი (PNG, PDF, TXT და ა.შ.)", type=None)
-        
+
         if uploaded_file:
-            st.markdown(f"<p style='color: #1f2937; font-size: 13px; margin-top: 5px; background: #e5e7eb; padding: 6px; border-radius: 6px;'>არჩეულია ფაილი: <b>{uploaded_file.name}</b></p>", unsafe_allow_html=True)
+            st.markdown(f"<p style='color: #1f2937; font-size: 13px; margin-top: 5px; background: #e5e7eb; padding: 6px; border-radius: 6px;'>არჩეულია ფაილი: <b>{esc(uploaded_file.name)}</b></p>", unsafe_allow_html=True)
 
         user_prompt = st.text_area("შეტყობინება AI-სთვის", placeholder="შეიყვანეთ დავალება...", height=90)
 
@@ -306,18 +324,21 @@ else:
                 content_blocks = []
                 if user_prompt:
                     content_blocks.append({"type": "text", "text": user_prompt})
-                
+
                 if uploaded_file is not None:
                     file_name = uploaded_file.name.lower()
                     file_bytes = uploaded_file.getvalue()
-                    
+
+                    # სურათების დამუშავება
                     if file_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
                         media_type = "image/png"
                         if file_name.endswith((".jpg", ".jpeg")):
                             media_type = "image/jpeg"
                         elif file_name.endswith(".webp"):
                             media_type = "image/webp"
-                            
+                        elif file_name.endswith(".gif"):
+                            media_type = "image/gif"
+
                         b64_data = base64.b64encode(file_bytes).decode("utf-8")
                         content_blocks.append({
                             "type": "image",
@@ -328,55 +349,61 @@ else:
                             }
                         })
                     else:
+                        # PDF და ტექსტური ფაილები
                         try:
                             file_text = read_uploaded_file(uploaded_file)
                             content_blocks.append({"type": "text", "text": f"\n\nDocument Content ({uploaded_file.name}):\n{file_text}"})
                         except Exception as fe:
                             st.error(f"ფაილის წაკითხვის შეცდომა: {fe}")
                             st.stop()
-                
+
                 if not content_blocks:
                     content_blocks.append({"type": "text", "text": "გთხოვთ გააანალიზოთ ატვირთული ფაილი."})
-                
+
                 with st.spinner("Claude ამუშავებს მონაცემებს..."):
                     message = client.messages.create(
                         model="claude-opus-5-5",
                         max_tokens=2048,
                         messages=[{"role": "user", "content": content_blocks}]
                     )
-                    
+
                     answer = next(block.text for block in message.content if hasattr(block, 'text'))
-                    
+
+                    # ვინახავთ ისტორიაში
                     supabase.table("history").insert({
                         "username": st.session_state.user,
                         "prompt": user_prompt if user_prompt else f"File: {uploaded_file.name if uploaded_file else 'None'}",
                         "response": answer
                     }).execute()
-                    
+
                     st.markdown("### 📊 პასუხი:")
-                    st.markdown(f"<div class='chat-bubble-ai'>{answer}</div>", unsafe_allow_html=True)
-                    
+                    st.markdown(f"<div class='chat-bubble-ai'>{esc(answer)}</div>", unsafe_allow_html=True)
+
             except Exception as e:
                 st.error(f"შეცდომა API-სთან დაკავშირებით: {e}")
         st.markdown('</div>', unsafe_allow_html=True)
 
+        # ბოლო 5 ანალიზის ისტორია
         st.markdown("### 🕒 ძველი ანალიზების ისტორია")
         history_res = supabase.table("history").select("prompt, response, timestamp").eq("username", st.session_state.user).order("timestamp", desc=True).limit(5).execute()
         history = history_res.data
-        
+
         if history:
             for h in history:
-                st.markdown(f"<div class='chat-bubble-user'><b>შეკითხვა:</b> {h['prompt'][:120]}...<br><small style='color: #9aa0a6;'>დრო: {h['timestamp']}</small></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {h['response'][:400]}...</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-user'><b>შეკითხვა:</b> {esc(h['prompt'][:120])}...<br><small style='color: #9aa0a6;'>დრო: {esc(h['timestamp'])}</small></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {esc(h['response'][:400])}...</div>", unsafe_allow_html=True)
         else:
             st.info("ისტორია ჯერ ცარიელია.")
 
+    # -------------------------------------------------------------------------
+    # ადმინისტრატორის პანელი
+    # -------------------------------------------------------------------------
     elif app_mode == "admin":
         st.markdown("### 📊 ადმინისტრატორის მართვის პანელი")
-        
+
         users_count_res = supabase.table("users").select("id", count="exact").execute()
         total_users = users_count_res.count if users_count_res.count is not None else len(users_count_res.data)
-        
+
         history_count_res = supabase.table("history").select("id", count="exact").execute()
         total_queries = history_count_res.count if history_count_res.count is not None else len(history_count_res.data)
 
@@ -396,6 +423,7 @@ else:
                 </div>
             """, unsafe_allow_html=True)
 
+        # ადმინის უფლების მინიჭება
         st.markdown("#### 👑 მომხმარებლისთვის ადმინის უფლების მინიჭება")
         target_promote_email = st.text_input("მომხმარებლის ელფოსტა", placeholder="user@example.com", key="promote_email_input")
         if st.button("მივანიჭო ADMIN სტატუსი"):
@@ -409,6 +437,7 @@ else:
             else:
                 st.warning("გთხოვთ ჩაწეროთ ელფოსტა.")
 
+        # მომხმარებლების ცხრილი
         st.markdown("#### 👥 რეგისტრირებული მომხმარებლები")
         users_res = supabase.table("users").select("id, email, role, created_at").order("created_at", desc=True).execute()
         users_data = users_res.data
@@ -419,12 +448,13 @@ else:
         else:
             st.info("მომხმარებლები არ მოიძებნა.")
 
+        # სისტემის სრული ისტორია
         st.markdown("#### 📜 სისტემის სრული ისტორია (ყველა მომხმარებელი)")
         all_history_res = supabase.table("history").select("username, prompt, response, timestamp").order("timestamp", desc=True).limit(20).execute()
         all_history = all_history_res.data
         if all_history:
             for ah in all_history:
-                st.markdown(f"<div class='chat-bubble-user'><b>მომხმარებელი:</b> {ah['username']}<br><b>შეკითხვა:</b> {ah['prompt'][:150]}...<br><small style='color: #9aa0a6;'>დრო: {ah['timestamp']}</small></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {ah['response'][:300]}...</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-user'><b>მომხმარებელი:</b> {esc(ah['username'])}<br><b>შეკითხვა:</b> {esc(ah['prompt'][:150])}...<br><small style='color: #9aa0a6;'>დრო: {esc(ah['timestamp'])}</small></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {esc(ah['response'][:300])}...</div>", unsafe_allow_html=True)
         else:
             st.info("ისტორია ჯერ ცარიელია.")
