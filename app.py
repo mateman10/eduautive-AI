@@ -1,5 +1,4 @@
 import streamlit as st
-import sqlite3
 import bcrypt
 import re
 import io
@@ -7,12 +6,26 @@ import base64
 import pandas as pd
 import anthropic
 from pypdf import PdfReader
+from supabase import create_client, Client
 
 # -----------------------------------------------------------------------------
 # ANTHROPIC CLAUDE API CONFIGURATION
 # -----------------------------------------------------------------------------
 API_KEY = "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"  # შენი API გასაღები
 client = anthropic.Anthropic(api_key=API_KEY)
+
+# -----------------------------------------------------------------------------
+# SUPABASE CONNECTION CONFIGURATION
+# -----------------------------------------------------------------------------
+# შეგიძლიათ გამოიყენოთ st.secrets ან პირდაპირ ჩასვათ თქვენი მონაცემები
+SUPABASE_URL = st.secrets.get("supabase", {}).get("url", "YOUR_SUPABASE_URL")
+SUPABASE_KEY = st.secrets.get("supabase", {}).get("key", "YOUR_SUPABASE_KEY")
+
+@st.cache_resource
+def init_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+supabase = init_supabase()
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION & FULL RESPONSIVE GEMINI / CLAUDE DARK THEME
@@ -105,32 +118,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# DATABASE SETUP
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def init_db():
-    conn = sqlite3.connect('eduaudit.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE,
-                    password_hash TEXT,
-                    role TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT,
-                    prompt TEXT,
-                    response TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )''')
-    conn.commit()
-    return conn
-
-conn = init_db()
-
-# -----------------------------------------------------------------------------
 # SESSION STATE & URL QUERY PARAMS CHECK
 # -----------------------------------------------------------------------------
 if 'logged_in' not in st.session_state:
@@ -146,13 +133,12 @@ query_params = st.query_params
 url_user = query_params.get("user")
 
 if url_user and not st.session_state.logged_in:
-    c = conn.cursor()
-    c.execute("SELECT email, role FROM users WHERE email = ?", (url_user,))
-    user_res = c.fetchone()
-    if user_res:
+    res = supabase.table("users").select("email, role").eq("email", url_user).execute()
+    if res.data:
+        user_res = res.data[0]
         st.session_state.logged_in = True
-        st.session_state.user = user_res[0]
-        st.session_state.role = user_res[1]
+        st.session_state.user = user_res["email"]
+        st.session_state.role = user_res["role"]
 
 # -----------------------------------------------------------------------------
 # HELPERS
@@ -223,36 +209,46 @@ if not st.session_state.logged_in:
                     st.error("პაროლი უნდა იყოს მინიმუმ 8 სიმბოლო და შეიცავდეს 1 დიდ ასოს.")
                 else:
                     try:
-                        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                        c = conn.cursor()
-                        c.execute("SELECT COUNT(*) FROM users")
-                        user_count = c.fetchone()[0]
-                        
-                        role = "ADMIN" if (user_count == 0 or email == "mmanagadze123@gmail.com") else "USER"
-                        
-                        c.execute("INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)", (email, hashed, role))
-                        conn.commit()
-                        st.success("რეგისტრაცია წარმატებულია! შეგიძლიათ შეხვიდეთ.")
-                    except sqlite3.IntegrityError:
-                        st.error("ეს ელფოსტა უკვე დაკავებულია.")
+                        # შევამოწმოთ არსებობს თუ არა უკვე ეს ელფოსტა
+                        existing_user = supabase.table("users").select("email").eq("email", email).execute()
+                        if existing_user.data:
+                            st.error("ეს ელფოსტა უკვე დაკავებულია.")
+                        else:
+                            hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                            
+                            # შევამოწმოთ სულ რამდენი იუზერია ბაზაში
+                            all_users = supabase.table("users").select("id", count="exact").execute()
+                            user_count = all_users.count if all_users.count is not None else len(all_users.data)
+                            
+                            role = "ADMIN" if (user_count == 0 or email == "mmanagadze123@gmail.com") else "USER"
+                            
+                            supabase.table("users").insert({
+                                "email": email,
+                                "password_hash": hashed,
+                                "role": role
+                            }).execute()
+                            
+                            st.success("რეგისტრაცია წარმატებულია! შეგიძლიათ შეხვიდეთ.")
+                    except Exception as e:
+                        st.error(f"შეცდომა რეგისტრაციისას: {e}")
         else:
             if st.button("შესვლა", use_container_width=True):
-                c = conn.cursor()
-                c.execute("SELECT password_hash, role FROM users WHERE email = ?", (email,))
-                res = c.fetchone()
+                res = supabase.table("users").select("password_hash, role").eq("email", email).execute()
                 
                 login_success = False
-                if res:
-                    stored_hash = res[0]
+                user_role = None
+                if res.data:
+                    stored_hash = res.data[0]["password_hash"]
+                    user_role = res.data[0]["role"]
                     if isinstance(stored_hash, str):
                         stored_hash = stored_hash.encode('utf-8')
                     if bcrypt.checkpw(password.encode('utf-8'), stored_hash):
                         login_success = True
 
-                if res and login_success:
+                if res.data and login_success:
                     st.session_state.logged_in = True
                     st.session_state.user = email
-                    st.session_state.role = res[1]
+                    st.session_state.role = user_role
                     st.query_params["user"] = email
                     st.rerun()
                 else:
@@ -278,7 +274,6 @@ else:
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # st.radio-ს ნაცვლად st.pills გამოყენება, რომელიც სრულად თავისუფალია რუხი ჩარჩოებისგან
     if st.session_state.role == "ADMIN":
         app_mode_selection = st.pills(
             "Navigation", 
@@ -352,10 +347,11 @@ else:
                     
                     answer = next(block.text for block in message.content if hasattr(block, 'text'))
                     
-                    c = conn.cursor()
-                    c.execute("INSERT INTO history (username, prompt, response) VALUES (?, ?, ?)", 
-                              (st.session_state.user, user_prompt if user_prompt else f"File: {uploaded_file.name if uploaded_file else 'None'}", answer))
-                    conn.commit()
+                    supabase.table("history").insert({
+                        "username": st.session_state.user,
+                        "prompt": user_prompt if user_prompt else f"File: {uploaded_file.name if uploaded_file else 'None'}",
+                        "response": answer
+                    }).execute()
                     
                     st.markdown("### 📊 პასუხი:")
                     st.markdown(f"<div class='chat-bubble-ai'>{answer}</div>", unsafe_allow_html=True)
@@ -365,24 +361,24 @@ else:
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown("### 🕒 ძველი ანალიზების ისტორია")
-        c = conn.cursor()
-        c.execute("SELECT prompt, response, timestamp FROM history WHERE username = ? ORDER BY timestamp DESC LIMIT 5", (st.session_state.user,))
-        history = c.fetchall()
+        history_res = supabase.table("history").select("prompt, response, timestamp").eq("username", st.session_state.user).order("timestamp", desc=True).limit(5).execute()
+        history = history_res.data
         
         if history:
             for h in history:
-                st.markdown(f"<div class='chat-bubble-user'><b>შეკითხვა:</b> {h[0][:120]}...<br><small style='color: #9aa0a6;'>დრო: {h[2]}</small></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {h[1][:400]}...</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-user'><b>შეკითხვა:</b> {h['prompt'][:120]}...<br><small style='color: #9aa0a6;'>დრო: {h['timestamp']}</small></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {h['response'][:400]}...</div>", unsafe_allow_html=True)
         else:
             st.info("ისტორია ჯერ ცარიელია.")
 
     elif app_mode == "admin":
         st.markdown("### 📊 ადმინისტრატორის მართვის პანელი")
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM users")
-        total_users = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM history")
-        total_queries = c.fetchone()[0]
+        
+        users_count_res = supabase.table("users").select("id", count="exact").execute()
+        total_users = users_count_res.count if users_count_res.count is not None else len(users_count_res.data)
+        
+        history_count_res = supabase.table("history").select("id", count="exact").execute()
+        total_queries = history_count_res.count if history_count_res.count is not None else len(history_count_res.data)
 
         m1, m2 = st.columns(2)
         with m1:
@@ -404,11 +400,9 @@ else:
         target_promote_email = st.text_input("მომხმარებლის ელფოსტა", placeholder="user@example.com", key="promote_email_input")
         if st.button("მივანიჭო ADMIN სტატუსი"):
             if target_promote_email:
-                c.execute("SELECT * FROM users WHERE email = ?", (target_promote_email,))
-                user_exists = c.fetchone()
-                if user_exists:
-                    c.execute("UPDATE users SET role = 'ADMIN' WHERE email = ?", (target_promote_email,))
-                    conn.commit()
+                user_check = supabase.table("users").select("*").eq("email", target_promote_email).execute()
+                if user_check.data:
+                    supabase.table("users").update({"role": "ADMIN"}).eq("email", target_promote_email).execute()
                     st.success(f"მომხმარებელი ({target_promote_email}) წარმატებით გახდა ადმინისტრატორი!")
                 else:
                     st.error("ასეთი ელფოსტით მომხმარებელი ბაზაში არ მოიძებნა.")
@@ -416,20 +410,21 @@ else:
                 st.warning("გთხოვთ ჩაწეროთ ელფოსტა.")
 
         st.markdown("#### 👥 რეგისტრირებული მომხმარებლები")
-        c.execute("SELECT id, email, role, created_at FROM users ORDER BY created_at DESC")
-        users_data = c.fetchall()
+        users_res = supabase.table("users").select("id, email, role, created_at").order("created_at", desc=True).execute()
+        users_data = users_res.data
         if users_data:
-            users_df = pd.DataFrame(users_data, columns=["ID", "ელფოსტა", "როლი", "რეგისტრაციის დრო"])
+            users_df = pd.DataFrame(users_data)
+            users_df = users_df.rename(columns={"id": "ID", "email": "ელფოსტა", "role": "როლი", "created_at": "რეგისტრაციის დრო"})
             st.dataframe(users_df, use_container_width=True)
         else:
             st.info("მომხმარებლები არ მოიძებნა.")
 
         st.markdown("#### 📜 სისტემის სრული ისტორია (ყველა მომხმარებელი)")
-        c.execute("SELECT username, prompt, response, timestamp FROM history ORDER BY timestamp DESC LIMIT 20")
-        all_history = c.fetchall()
+        all_history_res = supabase.table("history").select("username, prompt, response, timestamp").order("timestamp", desc=True).limit(20).execute()
+        all_history = all_history_res.data
         if all_history:
             for ah in all_history:
-                st.markdown(f"<div class='chat-bubble-user'><b>მომხმარებელი:</b> {ah[0]}<br><b>შეკითხვა:</b> {ah[1][:150]}...<br><small style='color: #9aa0a6;'>დრო: {ah[3]}</small></div>", unsafe_allow_html=True)
-                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {ah[2][:300]}...</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-user'><b>მომხმარებელი:</b> {ah['username']}<br><b>შეკითხვა:</b> {ah['prompt'][:150]}...<br><small style='color: #9aa0a6;'>დრო: {ah['timestamp']}</small></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='chat-bubble-ai'><b>AI პასუხი:</b> {ah['response'][:300]}...</div>", unsafe_allow_html=True)
         else:
-            st.info("ისტორია ჯერ ცარიელია.")  #საბოლოო
+            st.info("ისტორია ჯერ ცარიელია.")

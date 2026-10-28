@@ -3,3 +3,4 @@ anthropic
 pandas
 bcrypt
 pypdf
+supabase
