@@ -312,10 +312,15 @@ else:
             </div>
         """, unsafe_allow_html=True)
 
-        uploaded_file = st.file_uploader("📂 ატვირთეთ ნებისმიერი ფაილი (PNG, PDF, TXT და ა.შ.)", type=None)
+        uploaded_files = st.file_uploader(
+            "📂 ატვირთეთ ნებისმიერი ფაილი (PNG, PDF, TXT და ა.შ.)",
+            type=None,
+            accept_multiple_files=True
+        )
 
-        if uploaded_file:
-            st.markdown(f"<p style='color: #1f2937; font-size: 13px; margin-top: 5px; background: #e5e7eb; padding: 6px; border-radius: 6px;'>არჩეულია ფაილი: <b>{esc(uploaded_file.name)}</b></p>", unsafe_allow_html=True)
+        if uploaded_files:
+            names_text = ", ".join(esc(f.name) for f in uploaded_files)
+            st.markdown(f"<p style='color: #1f2937; font-size: 13px; margin-top: 5px; background: #e5e7eb; padding: 6px; border-radius: 6px;'>არჩეულია ფაილი: <b>{names_text}</b></p>", unsafe_allow_html=True)
 
         user_prompt = st.text_area("შეტყობინება AI-სთვის", placeholder="შეიყვანეთ დავალება...", height=90)
 
@@ -325,37 +330,38 @@ else:
                 if user_prompt:
                     content_blocks.append({"type": "text", "text": user_prompt})
 
-                if uploaded_file is not None:
-                    file_name = uploaded_file.name.lower()
-                    file_bytes = uploaded_file.getvalue()
+                if uploaded_files:
+                    for uploaded_file in uploaded_files:
+                        file_name = uploaded_file.name.lower()
+                        file_bytes = uploaded_file.getvalue()
 
-                    # სურათების დამუშავება
-                    if file_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
-                        media_type = "image/png"
-                        if file_name.endswith((".jpg", ".jpeg")):
-                            media_type = "image/jpeg"
-                        elif file_name.endswith(".webp"):
-                            media_type = "image/webp"
-                        elif file_name.endswith(".gif"):
-                            media_type = "image/gif"
+                        # სურათების დამუშავება
+                        if file_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                            media_type = "image/png"
+                            if file_name.endswith((".jpg", ".jpeg")):
+                                media_type = "image/jpeg"
+                            elif file_name.endswith(".webp"):
+                                media_type = "image/webp"
+                            elif file_name.endswith(".gif"):
+                                media_type = "image/gif"
 
-                        b64_data = base64.b64encode(file_bytes).decode("utf-8")
-                        content_blocks.append({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": b64_data
-                            }
-                        })
-                    else:
-                        # PDF და ტექსტური ფაილები
-                        try:
-                            file_text = read_uploaded_file(uploaded_file)
-                            content_blocks.append({"type": "text", "text": f"\n\nDocument Content ({uploaded_file.name}):\n{file_text}"})
-                        except Exception as fe:
-                            st.error(f"ფაილის წაკითხვის შეცდომა: {fe}")
-                            st.stop()
+                            b64_data = base64.b64encode(file_bytes).decode("utf-8")
+                            content_blocks.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data
+                                }
+                            })
+                        else:
+                            # PDF და ტექსტური ფაილები
+                            try:
+                                file_text = read_uploaded_file(uploaded_file)
+                                content_blocks.append({"type": "text", "text": f"\n\nDocument Content ({uploaded_file.name}):\n{file_text}"})
+                            except Exception as fe:
+                                st.error(f"ფაილის წაკითხვის შეცდომა: {fe}")
+                                st.stop()
 
                 if not content_blocks:
                     content_blocks.append({"type": "text", "text": "გთხოვთ გააანალიზოთ ატვირთული ფაილი."})
@@ -372,7 +378,7 @@ else:
                     # ვინახავთ ისტორიაში
                     supabase.table("history").insert({
                         "username": st.session_state.user,
-                        "prompt": user_prompt if user_prompt else f"File: {uploaded_file.name if uploaded_file else 'None'}",
+                        "prompt": user_prompt if user_prompt else (f"File: {', '.join(f.name for f in uploaded_files)}" if uploaded_files else "File: None"),
                         "response": answer
                     }).execute()
 
